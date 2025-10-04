@@ -16,13 +16,15 @@ st.set_page_config(
 # Streamlit se ejecuta desde la raíz del proyecto, por lo que las rutas deben ser relativas.
 SRGB_PROFILE = "profiles/sRGB_IEC61966-2-1.icc"
 ADOBE_RGB_PROFILE = "profiles/AdobeRGB1998.icc"
-CMYK_PROFILE = "profiles/ISOcoated_v2_eci.icc"
+# IMPORTANTE: Se ha cambiado el nombre del perfil CMYK a FOGRA39_v3.icc.
+# Este perfil es más común y ha demostrado ser más compatible con la incrustación de Pillow/Photoshop.
+CMYK_PROFILE = "profiles/FOGRA39_v3.icc"
 TARGET_DPI = (150, 150) # Resolución fija de 150 DPI
 
 # Verificar si los archivos ICC existen al inicio
 if not all(os.path.exists(p) for p in [SRGB_PROFILE, ADOBE_RGB_PROFILE, CMYK_PROFILE]):
     st.error("🚨 Error: No se encontraron todos los perfiles ICC.")
-    st.info("Asegúrate de que la carpeta 'profiles' y los archivos ICC están en la raíz de tu proyecto de GitHub, tal como se especificó en la guía.")
+    st.info(f"**IMPORTANTE:** Asegúrate de que los archivos 'sRGB_IEC61966-2-1.icc', 'AdobeRGB1998.icc' y ahora también **'FOGRA39_v3.icc'** están en la carpeta 'profiles' de tu repositorio.")
     st.stop()
 
 # --- Cargar datos del perfil CMYK una sola vez para incrustación ---
@@ -150,7 +152,7 @@ if uploaded_file is not None:
                 st.warning("La conversión falló. Revisa el mensaje de error anterior.")
                 st.stop()
                 
-            st.success("✅ Conversión completada a CMYK (ISO Coated v2/FOGRA39).")
+            st.success("✅ Conversión completada a CMYK (FOGRA39 / ISO Coated v2).")
 
             # 5. Generar Archivo de Salida para Descarga
             file_extension = ".tif" if output_format == "TIFF (Impresión - Recomendado)" else ".jpg"
@@ -161,13 +163,12 @@ if uploaded_file is not None:
             if file_extension == ".tif":
                 # Guardado TIFF: incrustar perfil y DPI
                 # Usamos los bytes cargados al inicio (CMYK_PROFILE_BYTES)
-                # IMPORTANTE: Se elimina la compresión (compression) para garantizar la máxima compatibilidad con el perfil ICC en Photoshop.
+                # IMPORTANTE: Se eliminó la compresión para máxima compatibilidad.
                 cmyk_img.save(
                     output_buffer, 
                     format='TIFF', 
                     dpi=TARGET_DPI,
                     icc_profile=CMYK_PROFILE_BYTES, 
-                    # compression="tiff_lzw" <-- Eliminado
                 )
             
             elif file_extension == ".jpg":
