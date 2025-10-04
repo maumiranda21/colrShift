@@ -1,0 +1,36 @@
+Conversor Profesional RGB a CMYK
+
+Una aplicación web creada con Streamlit para convertir imágenes del espacio de color RGB a CMYK, específicamente para el estándar de impresión FOGRA39 (ISO 12647-2).
+Características
+
+    Conversión con Perfil de Color: Utiliza perfiles ICC para una transformación de color precisa de sRGB o AdobeRGB a FOGRA39.
+
+    Conservación de Transparencia: Mantiene el canal alfa de las imágenes (ej. PNG) durante la conversión.
+
+    Resolución para Impresión: Las imágenes de salida se establecen en 150 DPI.
+
+    Formatos Profesionales: Exporta los archivos en formato TIFF (recomendado) o PSD.
+
+    Interfaz Intuitiva: Sube, configura y descarga en pocos clics.
+
+Despliegue en Streamlit Cloud
+
+    Fork/Clona este repositorio.
+
+    Crea una cuenta en Streamlit Community Cloud.
+
+    Haz clic en "New app" y conecta tu cuenta de GitHub.
+
+    Selecciona este repositorio y la rama principal.
+
+    Asegúrate de que el archivo principal es app.py.
+
+    ¡Haz clic en "Deploy!" y tu aplicación estará en línea en minutos.
+
+IMPORTANTE: Antes de desplegar, asegúrate de que la carpeta profiles/ contiene los siguientes archivos .icc:
+
+    sRGB_IEC61966-2-1.icc
+
+    AdobeRGB1998.icc
+
+    ISOcoated_v2_eci.icc
