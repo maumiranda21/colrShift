@@ -46,8 +46,7 @@ def convert_rgb_to_cmyk(img: Image.Image, source_profile_path: str, cmyk_profile
         source_profile = ImageCms.getOpenProfile(source_profile_path)
         cmyk_profile = ImageCms.getOpenProfile(cmyk_profile_path)
 
-        # Aplicar la transformación (rendering intent 0: perceptual, 1: relative colorimetric)
-        # Usamos relative colorimetric (1) que es común para impresión.
+        # Aplicar la transformación (rendering intent 1: relative colorimetric, común para impresión)
         cmyk_img = ImageCms.profileToProfile(
             rgb_img, 
             source_profile, 
@@ -61,34 +60,14 @@ def convert_rgb_to_cmyk(img: Image.Image, source_profile_path: str, cmyk_profile
 
     # 3. Recomponer con el Canal Alpha (Si existía)
     if is_transparent and cmyk_img.mode == 'CMYK':
-        # Crear la imagen CMYKA
-        cmyka_img = Image.merge('CMYK', cmyk_img.split())
-        
-        # Insertar el canal Alpha
-        # La librería ImageCms a veces elimina el canal 'A', lo reincorporamos aquí.
-        
-        # Creamos una nueva imagen CMYKA
-        temp_cmyka_img = Image.new('CMYKA', cmyka_img.size)
-        
-        # Copiamos los canales CMYK
-        temp_cmyka_img.putdata(cmyka_img.getdata()) 
-
-        # Si ImageCms soporta CMYK Alpha (CMYKA), intentamos poner el canal A directamente
-        # En la práctica, Pillow/CMS no soporta CMYKA nativamente para guardado TIFF con perfil.
-        # Para TIFF, la transparencia se maneja como un canal extra. 
-        # Mantendremos CMYK y lo documentaremos. TIFF CMYK nativo no soporta canal Alpha en todos los lectores.
-        
-        # Para garantizar la compatibilidad, si hay transparencia, la imagen se guarda como TIFF CMYK. 
-        # La transparencia se mantiene al guardar en TIFF. 
-        # No hay un modo 'CMYKA' estándar en Pillow para guardar con perfiles.
-        # Por simplicidad y compatibilidad, devolvemos CMYK y confiamos en que TIFF maneje el canal A.
+        # Reincorporamos el canal Alpha al CMYK
         cmyk_img.putalpha(alpha_channel)
         
     return cmyk_img
 
 # --- Interfaz de Usuario ---
 st.title("🎨 Conversor RGB a CMYK")
-st.markdown("Herramienta para preparar imágenes para imprenta (FOGRA39, 150 DPI) conservando transparencia.")
+st.markdown("Herramienta para preparar imágenes para imprenta (**FOGRA39**, **150 DPI**) conservando transparencia.")
 
 # --- Seleccionar Perfil de Origen ---
 source_profile_choice = st.selectbox(
@@ -118,7 +97,32 @@ if uploaded_file is not None:
         # Cargar imagen
         input_img = Image.open(uploaded_file)
         
-        # Mostrar detalles de la imagen subida
+        # --- CHEQUEO DE MODO DE IMAGEN PARA ESTANDARIZACIÓN ---
+        
+        # 1. Si la imagen NO es RGB o RGBA (los modos que podemos convertir)
+        if input_img.mode not in ['RGB', 'RGBA']:
+            
+            # Caso A: La imagen ya está en CMYK. No hacemos conversión de perfil.
+            if input_img.mode == 'CMYK':
+                st.warning("⚠️ Atención: La imagen que subiste ya está en modo CMYK. Se omitirá la conversión de perfiles. Se procederá con la resolución y el formato de salida elegidos.")
+                # Clonamos la imagen original CMYK para usarla directamente
+                cmyk_img = input_img.copy() 
+            
+            # Caso B: Otros modos (Grises, Paleta, etc.). Intentamos forzar a RGB/RGBA.
+            else:
+                try:
+                    # Si tiene canal Alpha, la convertimos a RGBA
+                    if 'A' in input_img.mode or input_img.mode == 'LA': 
+                        input_img = input_img.convert('RGBA')
+                    # Si no, la convertimos a RGB
+                    else:
+                        input_img = input_img.convert('RGB')
+                    st.info(f"ℹ️ Modo de imagen original estandarizado a {input_img.mode} para la conversión.")
+                except Exception as ex:
+                    st.error(f"❌ Error crítico: No se puede estandarizar el modo de imagen '{input_img.mode}'. Intenta subir una imagen RGB o PNG estándar. Detalle: {ex}")
+                    st.stop()
+        
+        # Mostrar detalles de la imagen subida (después de la estandarización)
         st.sidebar.subheader("Imagen Original")
         st.sidebar.image(input_img, caption=f"Modo: {input_img.mode}, Tamaño: {input_img.size}")
         st.sidebar.markdown(f"**¿Tiene Transparencia (Alpha)?** {'Sí' if 'A' in input_img.mode else 'No'}")
@@ -127,10 +131,12 @@ if uploaded_file is not None:
         # 4. Iniciar la Conversión
         with st.spinner("Realizando conversión de color a FOGRA39..."):
             
-            # Realizar la conversión
-            cmyk_img = convert_rgb_to_cmyk(input_img, source_profile_path, CMYK_PROFILE)
-
-            if cmyk_img is None:
+            # Ejecutar la conversión solo si no es CMYK de origen
+            if input_img.mode in ['RGB', 'RGBA']:
+                cmyk_img = convert_rgb_to_cmyk(input_img, source_profile_path, CMYK_PROFILE)
+            
+            # Si cmyk_img no se definió porque hubo un fallo en convert_rgb_to_cmyk
+            if 'cmyk_img' not in locals() or cmyk_img is None:
                 st.warning("La conversión falló. Revisa el mensaje de error anterior.")
                 st.stop()
                 
@@ -143,23 +149,18 @@ if uploaded_file is not None:
             output_buffer = io.BytesIO()
             
             if file_extension == ".tif":
-                # Intentar incrustar el perfil y configurar DPI
+                # Guardado TIFF: incrustar perfil y DPI
                 cmyk_img.save(
                     output_buffer, 
                     format='TIFF', 
                     dpi=TARGET_DPI,
-                    # Intentar incrustar el perfil CMYK
                     icc_profile=open(CMYK_PROFILE, 'rb').read(), 
-                    # Asegurar la compatibilidad con transparencia si existía
-                    # Nota: Pillow soporta el canal A en TIFF, pero el estándar CMYK+Alpha puede variar.
-                    # Aquí se guarda el canal A si la imagen original lo tenía.
-                    compression="tiff_lzw" # Compresión sin pérdidas (lzw)
+                    compression="tiff_lzw"
                 )
             
             elif file_extension == ".jpg":
-                # Guardar como JPEG CMYK (no soporta transparencia ni incrustación de ICC)
-                # La conversión de color ya está hecha, pero no se incrusta el perfil en JPEG.
-                cmyk_img.save(
+                # Guardar como JPEG CMYK. Aseguramos que sea modo CMYK para el JPG.
+                cmyk_img.convert('CMYK').save( 
                     output_buffer, 
                     format='JPEG', 
                     quality=95, 
@@ -186,8 +187,9 @@ if uploaded_file is not None:
             """)
 
     except Exception as e:
+        # Este mensaje final solo se mostrará si falla la carga o el guardado
         st.error(f"Ocurrió un error inesperado durante la carga o conversión: {e}")
-        st.info("Revisa la consola para más detalles o intenta con otro archivo.")
+        st.info("Revisa si el archivo es un formato de imagen estándar (RGB/PNG/JPG/TIFF) y no está dañado.")
 
 st.markdown("---")
 st.markdown("""
@@ -198,6 +200,6 @@ st.markdown("""
     }
 </style>
 <div class="footer">
-    **Nota Importante:** El soporte de creación de archivos PSD con perfiles ICC es extremadamente complejo en Python y no está incluido en esta versión. Se recomienda usar TIFF.
+    **Nota Importante:** El soporte para TIFF CMYK con transparencia (CMYKA) puede variar en software de terceros. Se recomienda verificar el archivo final en un programa de diseño profesional (como Adobe Photoshop).
 </div>
 """, unsafe_allow_html=True)
