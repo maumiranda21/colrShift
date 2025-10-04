@@ -161,12 +161,13 @@ if uploaded_file is not None:
             if file_extension == ".tif":
                 # Guardado TIFF: incrustar perfil y DPI
                 # Usamos los bytes cargados al inicio (CMYK_PROFILE_BYTES)
+                # IMPORTANTE: Se elimina la compresión (compression) para garantizar la máxima compatibilidad con el perfil ICC en Photoshop.
                 cmyk_img.save(
                     output_buffer, 
                     format='TIFF', 
                     dpi=TARGET_DPI,
                     icc_profile=CMYK_PROFILE_BYTES, 
-                    compression="tiff_lzw"
+                    # compression="tiff_lzw" <-- Eliminado
                 )
             
             elif file_extension == ".jpg":
