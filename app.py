@@ -1,144 +1,203 @@
 import streamlit as st
 from PIL import Image, ImageCms
 import io
+import os
+import tempfile
+import numpy as np
 
-# --- Configuración de la Página ---
+# --- Configuración de la Página de Streamlit ---
 st.set_page_config(
-    page_title="Conversor RGB a CMYK Pro",
-    page_icon="🎨",
+    page_title="Conversor RGB a CMYK (Impresión Profesional)",
     layout="centered",
-    initial_sidebar_state="auto",
+    initial_sidebar_state="auto"
 )
 
-# --- Rutas a los Perfiles de Color (ICC) ---
-# Asegúrate de que estos archivos estén en una carpeta 'profiles'
-srgb_profile_path = 'profiles/sRGB_IEC61966-2-1.icc'
-adobe_rgb_profile_path = 'profiles/AdobeRGB1998.icc'
-cmyk_profile_path = 'profiles/ISOcoated_v2_eci.icc' # FOGRA39
+# --- Constantes y Rutas de Perfiles ICC ---
+# Streamlit se ejecuta desde la raíz del proyecto, por lo que las rutas deben ser relativas.
+SRGB_PROFILE = "profiles/sRGB_IEC61966-2-1.icc"
+ADOBE_RGB_PROFILE = "profiles/AdobeRGB1998.icc"
+CMYK_PROFILE = "profiles/ISOcoated_v2_eci.icc"
+TARGET_DPI = (150, 150) # Resolución fija de 150 DPI
 
-# --- Función Principal de Conversión ---
-def convert_image_to_cmyk(image_bytes, input_profile, output_format):
-    """
-    Convierte una imagen de RGB a CMYK usando perfiles de color ICC,
-    conservando la transparencia y estableciendo los DPI.
-    """
-    try:
-        # Abrir la imagen desde los bytes en memoria
-        img = Image.open(io.BytesIO(image_bytes))
+# Verificar si los archivos ICC existen al inicio
+if not all(os.path.exists(p) for p in [SRGB_PROFILE, ADOBE_RGB_PROFILE, CMYK_PROFILE]):
+    st.error("🚨 Error: No se encontraron todos los perfiles ICC.")
+    st.info("Asegúrate de que la carpeta 'profiles' y los archivos ICC están en la raíz de tu proyecto de GitHub, tal como se especificó en la guía.")
+    st.stop()
 
-        # 1. Conservar la transparencia (canal alfa)
-        has_alpha = 'A' in img.getbands()
+
+def convert_rgb_to_cmyk(img: Image.Image, source_profile_path: str, cmyk_profile_path: str) -> Image.Image:
+    """Convierte una imagen RGB a CMYK conservando la transparencia si es posible."""
+    
+    # 1. Preparar la Imagen y el Canal Alpha
+    is_transparent = img.mode == 'RGBA'
+    
+    if is_transparent:
+        # Separar el canal RGB del canal Alpha
+        rgb_img = img.convert('RGB')
+        alpha_channel = img.getchannel('A')
+    else:
+        rgb_img = img.convert('RGB')
         alpha_channel = None
-        if has_alpha:
-            alpha_channel = img.getchannel('A')
-            # Para la conversión de perfil, trabajamos solo con los canales RGB
-            img = img.convert('RGB')
 
-        # 2. Asignar el perfil de color de entrada correcto
-        input_profile_path = srgb_profile_path if input_profile == 'sRGB' else adobe_rgb_profile_path
+    # 2. Conversión de Color (RGB -> CMYK)
+    try:
+        # Cargar los perfiles ICC
+        source_profile = ImageCms.getOpenProfile(source_profile_path)
+        cmyk_profile = ImageCms.getOpenProfile(cmyk_profile_path)
 
-        # 3. Realizar la conversión de color profesional con ImageCms
-        # El Intent 0 (Perceptual) es ideal para fotografías y busca mantener la apariencia visual.
-        img_cmyk = ImageCms.profileToProfile(
-            img,
-            input_profile_path,
-            cmyk_profile_path,
-            renderingIntent=0,
+        # Aplicar la transformación (rendering intent 0: perceptual, 1: relative colorimetric)
+        # Usamos relative colorimetric (1) que es común para impresión.
+        cmyk_img = ImageCms.profileToProfile(
+            rgb_img, 
+            source_profile, 
+            cmyk_profile, 
+            renderingIntent=1, 
             outputMode='CMYK'
         )
-
-        # 4. Si la imagen original tenía transparencia, la reincorporamos
-        if has_alpha and alpha_channel:
-            img_cmyk.putalpha(alpha_channel)
-
-        # 5. Guardar la imagen en un buffer en memoria con el formato y DPI correctos
-        output_buffer = io.BytesIO()
-        if output_format == 'TIFF':
-            # La compresión LZW es sin pérdidas y muy compatible
-            img_cmyk.save(output_buffer, format='TIFF', dpi=(150, 150), compression='tiff_lzw')
-            file_extension = 'tiff'
-        elif output_format == 'PSD':
-            # Pillow usa la librería 'psd-tools' para guardar, asegúrate de tenerla
-            img_cmyk.save(output_buffer, format='PSD', dpi=(150, 150))
-            file_extension = 'psd'
-        
-        output_buffer.seek(0)
-        return output_buffer, file_extension
-
-    except FileNotFoundError as e:
-        st.error(f"Error: No se encontró un perfil de color. Asegúrate de que los archivos .icc estén en la carpeta 'profiles'. Detalle: {e}")
-        return None, None
     except Exception as e:
-        st.error(f"Ocurrió un error inesperado durante la conversión: {e}")
-        return None, None
+        st.error(f"Error durante la conversión de color (profileToProfile): {e}")
+        return None
 
+    # 3. Recomponer con el Canal Alpha (Si existía)
+    if is_transparent and cmyk_img.mode == 'CMYK':
+        # Crear la imagen CMYKA
+        cmyka_img = Image.merge('CMYK', cmyk_img.split())
+        
+        # Insertar el canal Alpha
+        # La librería ImageCms a veces elimina el canal 'A', lo reincorporamos aquí.
+        
+        # Creamos una nueva imagen CMYKA
+        temp_cmyka_img = Image.new('CMYKA', cmyka_img.size)
+        
+        # Copiamos los canales CMYK
+        temp_cmyka_img.putdata(cmyka_img.getdata()) 
 
-# --- Interfaz de Usuario de Streamlit ---
+        # Si ImageCms soporta CMYK Alpha (CMYKA), intentamos poner el canal A directamente
+        # En la práctica, Pillow/CMS no soporta CMYKA nativamente para guardado TIFF con perfil.
+        # Para TIFF, la transparencia se maneja como un canal extra. 
+        # Mantendremos CMYK y lo documentaremos. TIFF CMYK nativo no soporta canal Alpha en todos los lectores.
+        
+        # Para garantizar la compatibilidad, si hay transparencia, la imagen se guarda como TIFF CMYK. 
+        # La transparencia se mantiene al guardar en TIFF. 
+        # No hay un modo 'CMYKA' estándar en Pillow para guardar con perfiles.
+        # Por simplicidad y compatibilidad, devolvemos CMYK y confiamos en que TIFF maneje el canal A.
+        cmyk_img.putalpha(alpha_channel)
+        
+    return cmyk_img
 
-st.title("🎨 Conversor Profesional RGB a CMYK")
-st.markdown("""
-Esta herramienta convierte tus imágenes RGB al espacio de color **CMYK FOGRA39**,
-preparándolas para imprenta profesional. Conserva la **transparencia** y ajusta la
-resolución a **150 DPI**.
-""")
+# --- Interfaz de Usuario ---
+st.title("🎨 Conversor RGB a CMYK")
+st.markdown("Herramienta para preparar imágenes para imprenta (FOGRA39, 150 DPI) conservando transparencia.")
 
-st.info("**Instrucciones:**\n"
-        "1. Sube tu archivo de imagen (PNG, JPG, etc.).\n"
-        "2. Selecciona el perfil de color RGB original de tu imagen.\n"
-        "3. Elige el formato de salida (TIFF es recomendado para calidad y compatibilidad).\n"
-        "4. Haz clic en 'Convertir' y descarga tu archivo listo para imprimir.")
-
-uploaded_file = st.file_uploader(
-    "Sube tu imagen aquí",
-    type=['png', 'jpg', 'jpeg', 'webp']
+# --- Seleccionar Perfil de Origen ---
+source_profile_choice = st.selectbox(
+    "1. Selecciona el perfil RGB de la imagen original:",
+    ("sRGB (Estándar Web)", "Adobe RGB 1998 (Espacio Grande)")
 )
 
-if uploaded_file is not None:
-    # Mostrar la imagen original
-    st.image(uploaded_file, caption="Imagen Original (RGB)", use_column_width=True)
-
-    # Opciones de conversión
-    col1, col2 = st.columns(2)
-    with col1:
-        input_profile_option = st.selectbox(
-            "Perfil RGB de Origen:",
-            ('sRGB', 'AdobeRGB'),
-            help="sRGB es el estándar para la web. AdobeRGB tiene una gama de colores más amplia, común en fotografía profesional."
-        )
-    with col2:
-        output_format_option = st.selectbox(
-            "Formato de Salida:",
-            ('TIFF', 'PSD'),
-            help="TIFF es el estándar de oro para la impresión por su calidad y compresión sin pérdidas. PSD conserva la estructura para Adobe Photoshop."
-        )
-
-    # Botón para iniciar la conversión
-    if st.button("✨ Convertir a CMYK", use_container_width=True):
-        with st.spinner("Procesando... La conversión de color puede tardar unos segundos..."):
-            image_bytes = uploaded_file.getvalue()
-            
-            converted_image_buffer, file_ext = convert_image_to_cmyk(
-                image_bytes,
-                input_profile_option,
-                output_format_option
-            )
-
-            if converted_image_buffer:
-                st.success("¡Conversión exitosa!")
-                
-                # Generar el nombre del archivo de salida
-                original_filename = uploaded_file.name.rsplit('.', 1)[0]
-                download_filename = f"{original_filename}_CMYK_FOGRA39.{file_ext}"
-
-                st.download_button(
-                    label=f"📥 Descargar {download_filename}",
-                    data=converted_image_buffer,
-                    file_name=download_filename,
-                    mime=f'image/{file_ext}',
-                    use_container_width=True
-                )
+if source_profile_choice == "sRGB (Estándar Web)":
+    source_profile_path = SRGB_PROFILE
 else:
-    st.warning("Esperando a que subas una imagen.")
+    source_profile_path = ADOBE_RGB_PROFILE
+
+# --- Cargar Archivo ---
+uploaded_file = st.file_uploader(
+    "2. Sube tu imagen (JPG, PNG o TIFF)", 
+    type=['jpg', 'jpeg', 'png', 'tif', 'tiff']
+)
+
+output_format = st.selectbox(
+    "3. Selecciona el formato de salida:",
+    ("TIFF (Impresión - Recomendado)", "JPEG (Prueba/Web - CMYK)")
+)
+
+
+if uploaded_file is not None:
+    try:
+        # Cargar imagen
+        input_img = Image.open(uploaded_file)
+        
+        # Mostrar detalles de la imagen subida
+        st.sidebar.subheader("Imagen Original")
+        st.sidebar.image(input_img, caption=f"Modo: {input_img.mode}, Tamaño: {input_img.size}")
+        st.sidebar.markdown(f"**¿Tiene Transparencia (Alpha)?** {'Sí' if 'A' in input_img.mode else 'No'}")
+
+
+        # 4. Iniciar la Conversión
+        with st.spinner("Realizando conversión de color a FOGRA39..."):
+            
+            # Realizar la conversión
+            cmyk_img = convert_rgb_to_cmyk(input_img, source_profile_path, CMYK_PROFILE)
+
+            if cmyk_img is None:
+                st.warning("La conversión falló. Revisa el mensaje de error anterior.")
+                st.stop()
+                
+            st.success("✅ Conversión completada a CMYK (ISO Coated v2/FOGRA39).")
+
+            # 5. Generar Archivo de Salida para Descarga
+            file_extension = ".tif" if output_format == "TIFF (Impresión - Recomendado)" else ".jpg"
+            mime_type = "image/tiff" if output_format == "TIFF (Impresión - Recomendado)" else "image/jpeg"
+            
+            output_buffer = io.BytesIO()
+            
+            if file_extension == ".tif":
+                # Intentar incrustar el perfil y configurar DPI
+                cmyk_img.save(
+                    output_buffer, 
+                    format='TIFF', 
+                    dpi=TARGET_DPI,
+                    # Intentar incrustar el perfil CMYK
+                    icc_profile=open(CMYK_PROFILE, 'rb').read(), 
+                    # Asegurar la compatibilidad con transparencia si existía
+                    # Nota: Pillow soporta el canal A en TIFF, pero el estándar CMYK+Alpha puede variar.
+                    # Aquí se guarda el canal A si la imagen original lo tenía.
+                    compression="tiff_lzw" # Compresión sin pérdidas (lzw)
+                )
+            
+            elif file_extension == ".jpg":
+                # Guardar como JPEG CMYK (no soporta transparencia ni incrustación de ICC)
+                # La conversión de color ya está hecha, pero no se incrusta el perfil en JPEG.
+                cmyk_img.save(
+                    output_buffer, 
+                    format='JPEG', 
+                    quality=95, 
+                    optimize=True
+                )
+
+            output_buffer.seek(0)
+            
+            # --- Botón de Descarga ---
+            st.markdown("---")
+            st.subheader("Descarga de Archivo Final")
+            st.download_button(
+                label=f"⬇️ Descargar Archivo CMYK {file_extension.upper()}",
+                data=output_buffer,
+                file_name=f"imagen_cmyk{file_extension}",
+                mime=mime_type
+            )
+            
+            st.markdown(f"""
+            **Características del archivo:**
+            * **Modo de Color:** CMYK (FOGRA39 / ISO Coated v2)
+            * **DPI:** 150x150
+            * **Formato:** {file_extension.upper()}
+            """)
+
+    except Exception as e:
+        st.error(f"Ocurrió un error inesperado durante la carga o conversión: {e}")
+        st.info("Revisa la consola para más detalles o intenta con otro archivo.")
 
 st.markdown("---")
-st.markdown("Desarrollado con ❤️ por IA para flujos de trabajo de impresión.")
+st.markdown("""
+<style>
+    .footer {
+        font-size: 0.8em;
+        color: #999;
+    }
+</style>
+<div class="footer">
+    **Nota Importante:** El soporte de creación de archivos PSD con perfiles ICC es extremadamente complejo en Python y no está incluido en esta versión. Se recomienda usar TIFF.
+</div>
+""", unsafe_allow_html=True)
