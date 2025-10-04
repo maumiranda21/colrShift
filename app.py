@@ -25,6 +25,16 @@ if not all(os.path.exists(p) for p in [SRGB_PROFILE, ADOBE_RGB_PROFILE, CMYK_PRO
     st.info("Asegúrate de que la carpeta 'profiles' y los archivos ICC están en la raíz de tu proyecto de GitHub, tal como se especificó en la guía.")
     st.stop()
 
+# --- Cargar datos del perfil CMYK una sola vez para incrustación ---
+# Esto hace más robusta la incrustación del perfil.
+CMYK_PROFILE_BYTES = None
+try:
+    with open(CMYK_PROFILE, 'rb') as f:
+        CMYK_PROFILE_BYTES = f.read()
+except Exception as e:
+    st.error(f"🚨 Error al leer el perfil CMYK para la incrustación: {e}")
+    st.stop()
+
 
 def convert_rgb_to_cmyk(img: Image.Image, source_profile_path: str, cmyk_profile_path: str) -> Image.Image:
     """Convierte una imagen RGB a CMYK conservando la transparencia si es posible."""
@@ -150,11 +160,12 @@ if uploaded_file is not None:
             
             if file_extension == ".tif":
                 # Guardado TIFF: incrustar perfil y DPI
+                # Usamos los bytes cargados al inicio (CMYK_PROFILE_BYTES)
                 cmyk_img.save(
                     output_buffer, 
                     format='TIFF', 
                     dpi=TARGET_DPI,
-                    icc_profile=open(CMYK_PROFILE, 'rb').read(), 
+                    icc_profile=CMYK_PROFILE_BYTES, 
                     compression="tiff_lzw"
                 )
             
